@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 import os
 from aio_api_ros import create_rosapi_connection
-from aio_api_ros.unpacker import SentenceUnpacker
-from aio_api_ros.parser import parse_sentence
 from aiostream import stream
 from sanic import Sanic, response, exceptions
 
@@ -42,14 +40,6 @@ async def wrap(i):
             value)
 
 
-async def mikrotik_run(conn, cmd):
-    conn.talk_sentence(cmd)
-    data = await conn.read(full_answer=True, parse=False)
-    unpacker = SentenceUnpacker()
-    unpacker.feed(data)
-    return [parse_sentence(sentence) for sentence in unpacker]
-
-
 async def scrape_mikrotik(target):
     mk = await create_rosapi_connection(
         mk_ip=target,
@@ -61,7 +51,8 @@ async def scrape_mikrotik(target):
 
     ports = ",".join([str(j) for j in range(0, 24)])
 
-    res = await mikrotik_run(mk, ["/interface/print"])
+    mk.talk_sentence(["/interface/print"])
+    res = await mk.read_full_answer()
     for resp, _, obj in res:
         if resp in ("!trap", "!done"):
             break
@@ -84,7 +75,8 @@ async def scrape_mikrotik(target):
         yield "interface-running", "gauge", int(obj["tx-byte"]), labels
         yield "interface-actual-mtu", "gauge", obj["actual-mtu"], labels
 
-    res = await mikrotik_run(mk, ["/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports])
+    mk.talk_sentence(["/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports])
+    res = await mk.read_full_answer()
     for resp, _, obj in res:
         if resp in ("!trap", "!done"):
             break
@@ -120,7 +112,8 @@ async def scrape_mikrotik(target):
             pass
         yield "interface-status", "gauge", 1, labels
 
-    res = await mikrotik_run(mk, ["/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ports])
+    mk.talk_sentence(["/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ports])
+    res = await mk.read_full_answer()
     for resp, _, obj in res:
         if resp in ("!trap", "!done"):
             break
@@ -135,7 +128,8 @@ async def scrape_mikrotik(target):
         labels["status"] = obj["poe-out-status"]
         yield "poe-out-status", "gauge", 1, labels
 
-    res = await mikrotik_run(mk, ["/system/resource/print"])
+    mk.talk_sentence(["/system/resource/print"])
+    res = await mk.read_full_answer()
     for resp, _, obj in res:
         if resp in ("!trap", "!done"):
             break
@@ -152,7 +146,8 @@ async def scrape_mikrotik(target):
             labels[key] = obj[key]
         yield "system-version", "gauge", 1, labels
 
-    res = await mikrotik_run(mk, ["/system/health/print"])
+    mk.talk_sentence(["/system/health/print"])
+    res = await mk.read_full_answer()
     for resp, _, obj in res:
         if resp in ("!trap", "!done"):
             break
