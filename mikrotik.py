@@ -10,14 +10,13 @@ PREFIX = os.getenv("PROMETHEUS_PREFIX", "mikrotik_")
 PROMETHEUS_BEARER_TOKEN = os.getenv("PROMETHEUS_BEARER_TOKEN")
 MIKROTIK_USER = os.getenv("MIKROTIK_USER")
 MIKROTIK_PASSWORD = os.getenv("MIKROTIK_PASSWORD")
-TARGETS = os.getenv("TARGETS")
 
 if not MIKROTIK_USER:
     raise ValueError("MIKROTIK_USER not specified")
 if not MIKROTIK_PASSWORD:
     raise ValueError("MIKROTIK_PASSWORD not specified")
-if not TARGETS:
-    raise ValueError("TARGETS not specified")
+if not PROMETHEUS_BEARER_TOKEN:
+    raise ValueError("No PROMETHEUS_BEARER_TOKEN specified")
 
 RATE_MAPPING = {
     "40Gbps": 40 * 10 ** 9,
@@ -165,15 +164,12 @@ async def scrape_mikrotik(target):
 
 @app.route("/metrics")
 async def view_export(request):
-    if PROMETHEUS_BEARER_TOKEN and request.token != PROMETHEUS_BEARER_TOKEN:
+    if request.token != PROMETHEUS_BEARER_TOKEN:
         raise exceptions.Forbidden("Invalid bearer token")
 
     async def streaming_fn(response):
-        args = [scrape_mikrotik(target) for target in TARGETS.split(",")]
-        combine = stream.merge(*args)
-        async with combine.stream() as streamer:
-            async for line in wrap(streamer):
-                await response.write(line + "\n")
+        async for line in wrap(scrape_mikrotik(request.args.get("target"))):
+            await response.write(line + "\n")
 
     return response.stream(streaming_fn, content_type="text/plain")
 
