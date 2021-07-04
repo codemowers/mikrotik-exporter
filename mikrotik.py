@@ -58,22 +58,22 @@ async def scrape_mikrotik(target):
             break
         labels = {"host": target, "port": obj["name"], "type": obj["type"]}
 
-        yield "interface-rx-bytes", "counter", obj["rx-byte"], labels
-        yield "interface-tx-bytes", "counter", obj["tx-byte"], labels
-        yield "interface-rx-packets", "counter", obj["rx-packet"], labels
-        yield "interface-tx-packets", "counter", obj["tx-packet"], labels
+        yield "interface_rx_bytes", "counter", obj["rx-byte"], labels
+        yield "interface_tx_bytes", "counter", obj["tx-byte"], labels
+        yield "interface_rx_packets", "counter", obj["rx-packet"], labels
+        yield "interface_tx_packets", "counter", obj["tx-packet"], labels
         try:
-            yield "interface-rx-errors", "counter", obj["rx-error"], labels
-            yield "interface-tx-errors", "counter", obj["tx-error"], labels
+            yield "interface_rx_errors", "counter", obj["rx-error"], labels
+            yield "interface_tx_errors", "counter", obj["tx-error"], labels
         except KeyError:
             pass
         try:
-            yield "interface-rx-drops", "counter", obj["rx-drop"], labels
-            yield "interface-tx-drops", "counter", obj["tx-drop"], labels
+            yield "interface_rx_drops", "counter", obj["rx-drop"], labels
+            yield "interface_tx_drops", "counter", obj["tx-drop"], labels
         except KeyError:
             pass
-        yield "interface-running", "gauge", int(obj["tx-byte"]), labels
-        yield "interface-actual-mtu", "gauge", obj["actual-mtu"], labels
+        yield "interface_running", "gauge", int(obj["tx-byte"]), labels
+        yield "interface_actual_mtu", "gauge", obj["actual-mtu"], labels
 
     mk.talk_sentence(["/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports])
     res = await mk.read_full_answer()
@@ -87,30 +87,30 @@ async def scrape_mikrotik(target):
         except KeyError:
             pass
         else:
-            yield "interface-rate", "gauge", RATE_MAPPING[rate], labels
+            yield "interface_rate", "gauge", RATE_MAPPING[rate], labels
 
         try:
-            labels["sfp-vendor-name"] = obj["sfp-vendor-name"]
+            labels["sfp_vendor_name"] = obj["sfp-vendor-name"]
         except KeyError:
             pass
         try:
-            labels["sfp-vendor-part-number"] = obj["sfp-vendor-part-number"]
+            labels["sfp_vendor_part_number"] = obj["sfp-vendor-part-number"]
         except KeyError:
             pass
 
         try:
-            yield "interface-sfp-temperature", "gauge", obj["sfp-temperature"], labels
-            yield "interface-sfp-tx-power", "gauge", obj["sfp-tx-power"], labels
-            yield "interface-sfp-rx-power", "gauge", obj["sfp-tx-power"], labels
+            yield "interface_sfp_temperature", "gauge", obj["sfp-temperature"], labels
+            yield "interface_sfp_tx_power", "gauge", obj["sfp-tx-power"], labels
+            yield "interface_sfp_rx_power", "gauge", obj["sfp-tx-power"], labels
         except KeyError:
             pass
 
         labels["status"] = obj["status"]
         try:
-            labels["sfp-module-present"] = int(obj["sfp-module-present"])
+            labels["sfp_module_present"] = int(obj["sfp-module-present"])
         except KeyError:
             pass
-        yield "interface-status", "gauge", 1, labels
+        yield "interface_status", "gauge", 1, labels
 
     mk.talk_sentence(["/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ports])
     res = await mk.read_full_answer()
@@ -120,13 +120,13 @@ async def scrape_mikrotik(target):
 
         labels = {"host": target, "port": obj["name"]}
         try:
-            yield "poe-out-voltage", "gauge", float(obj["poe-out-voltage"]), labels
-            yield "poe-out-current", "gauge", int(obj["poe-out-current"]) / 1000.0, labels
+            yield "poe_out_voltage", "gauge", float(obj["poe-out-voltage"]), labels
+            yield "poe_out_current", "gauge", int(obj["poe-out-current"]) / 1000.0, labels
         except KeyError:
             pass
 
         labels["status"] = obj["poe-out-status"]
-        yield "poe-out-status", "gauge", 1, labels
+        yield "poe_out_status", "gauge", 1, labels
 
     mk.talk_sentence(["/system/resource/print"])
     res = await mk.read_full_answer()
@@ -135,16 +135,16 @@ async def scrape_mikrotik(target):
             break
 
         labels = {"host": target}
-        yield "system-write-sect-total", "counter", obj["write-sect-total"], labels
-        yield "system-free-memory", "gauge", obj["free-memory"], labels
+        yield "system_write_sect_total", "counter", obj["write-sect-total"], labels
+        yield "system_free_memory", "gauge", obj["free-memory"], labels
         try:
-            yield "system-bad-blocks", "counter", obj["bad-blocks"], labels
+            yield "system_bad_blocks", "counter", obj["bad-blocks"], labels
         except KeyError:
             pass
 
         for key in ("version", "cpu", "cpu-count", "board-name", "architecture-name"):
-            labels[key] = obj[key]
-        yield "system-version", "gauge", 1, labels
+            labels[key.replace("-", "_")] = obj[key]
+        yield "system_version", "gauge", 1, labels
 
     mk.talk_sentence(["/system/health/print"])
     res = await mk.read_full_answer()
@@ -157,9 +157,9 @@ async def scrape_mikrotik(target):
                 value = float(value)
             except ValueError:
                 labels["state"] = value
-                yield "system-health-%s" % key, "gauge", 1, labels
+                yield "system_health_%s" % key.replace("-", "_"), "gauge", 1, labels
             else:
-                yield "system-health-%s" % key, "gauge", value, labels
+                yield "system_health_%s" % key.replace("-", "_"), "gauge", value, labels
     mk.close()
 
 
