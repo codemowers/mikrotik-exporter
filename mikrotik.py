@@ -48,8 +48,6 @@ async def scrape_mikrotik(target):
 
     )
 
-    ports = ",".join([str(j) for j in range(0, 24)])
-
     mk.talk_sentence(["/interface/print"])
     res = await mk.read_full_answer()
     for resp, _, obj in res:
@@ -73,6 +71,15 @@ async def scrape_mikrotik(target):
             pass
         yield "interface_running", "gauge", int(obj["tx-byte"]), labels
         yield "interface_actual_mtu", "gauge", obj["actual-mtu"], labels
+
+    mk.talk_sentence(["/interface/ethernet/print"])
+    port_count = 0
+    res = await mk.read_full_answer()
+    for resp, _, obj in res:
+        if resp in ("!trap", "!done"):
+            break
+        port_count += 1
+    ports = ",".join([str(j) for j in range(0, port_count)])
 
     mk.talk_sentence(["/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports])
     res = await mk.read_full_answer()
