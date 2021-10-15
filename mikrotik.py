@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import os
-from aio_api_ros import create_rosapi_connection
+from aio_api_ros.connection import ApiRosConnection
 from aiostream import stream
 from sanic import Sanic, response, exceptions
 
@@ -39,14 +39,15 @@ async def wrap(i):
             value)
 
 
-async def scrape_mikrotik(target):
-    mk = await create_rosapi_connection(
+async def scrape_mikrotik(target, port):
+    mk = ApiRosConnection(
         mk_ip=target,
-        mk_port=8728,
+        mk_port=port,
         mk_user=MIKROTIK_USER,
         mk_psw=MIKROTIK_PASSWORD,
-
     )
+    await mk.connect()
+    await mk.login()
 
     mk.talk_sentence(["/interface/print"])
     res = await mk.read_full_answer()
@@ -173,9 +174,17 @@ async def scrape_mikrotik(target):
 async def view_export(request):
     if request.token != PROMETHEUS_BEARER_TOKEN:
         raise exceptions.Forbidden("Invalid bearer token")
+    target = request.args.get("target")
+    if not target:
+        raise exceptions.InvalidUsage("Invalid or no target specified")
+    if ":" in target:
+        target, port = target.split(":")
+        port = int(port)
+    else:
+        port = 8728
 
     async def streaming_fn(response):
-        async for line in wrap(scrape_mikrotik(request.args.get("target"))):
+        async for line in wrap(scrape_mikrotik(target, port)):
             await response.write(line + "\n")
 
     return response.stream(streaming_fn, content_type="text/plain")

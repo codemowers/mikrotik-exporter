@@ -1,8 +1,17 @@
 version: '3.7'
 
 services:
-  app:
+  mikrotik-exporter:
     build:
       context: .
     env_file: .env
+    environment:
+     - PROMETHEUS_BEARER_TOKEN=ZwRZm7Qe6J
     network_mode: host
+  prometheus:
+    network_mode: "host"
+    image: prom/prometheus:latest
+    command:
+    - --config.file=/config/prometheus.yml
+    volumes:
+     - ./config:/config:ro
