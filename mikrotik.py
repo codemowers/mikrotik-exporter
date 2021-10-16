@@ -81,6 +81,7 @@ async def scrape_mikrotik(target, port):
             break
         port_count += 1
     ports = ",".join([str(j) for j in range(0, port_count)])
+    yield "port_count", "gauge", port_count, {"host": target }
 
     mk.talk_sentence(["/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports])
     res = await mk.read_full_answer()
