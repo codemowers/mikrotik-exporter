@@ -49,11 +49,8 @@ async def scrape_mikrotik(target, port):
     await mk.connect()
     await mk.login()
 
-    mk.talk_sentence(["/interface/print"])
-    res = await mk.read_full_answer()
-    for resp, _, obj in res:
-        if resp in ("!trap", "!done"):
-            break
+    async for obj in mk.query("/interface/print"):
+
         labels = {"host": target, "port": obj["name"], "type": obj["type"]}
 
         yield "interface_rx_bytes", "counter", obj["rx-byte"], labels
@@ -73,21 +70,13 @@ async def scrape_mikrotik(target, port):
         yield "interface_running", "gauge", int(obj["tx-byte"]), labels
         yield "interface_actual_mtu", "gauge", obj["actual-mtu"], labels
 
-    mk.talk_sentence(["/interface/ethernet/print"])
     port_count = 0
-    res = await mk.read_full_answer()
-    for resp, _, obj in res:
-        if resp in ("!trap", "!done"):
-            break
+    res = mk.query("/interface/ethernet/print")
+    async for obj in res:
         port_count += 1
-    ports = ",".join([str(j) for j in range(0, port_count)])
-    yield "port_count", "gauge", port_count, {"host": target }
+    ports = ",".join([str(j) for j in range(1, port_count)])
 
-    mk.talk_sentence(["/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports])
-    res = await mk.read_full_answer()
-    for resp, _, obj in res:
-        if resp in ("!trap", "!done"):
-            break
+    async for obj in mk.query("/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports):
         labels = {"host": target, "port": obj["name"]}
 
         try:
@@ -120,28 +109,25 @@ async def scrape_mikrotik(target, port):
             pass
         yield "interface_status", "gauge", 1, labels
 
-    mk.talk_sentence(["/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ports])
-    res = await mk.read_full_answer()
-    for resp, _, obj in res:
-        if resp in ("!trap", "!done"):
-            break
+    poe_ports = set()
+    res = mk.query("/interface/ethernet/poe/print", optional=True)
+    async for obj in res:
+        poe_ports.add(int(obj[".id"][1:],16)-1)
 
-        labels = {"host": target, "port": obj["name"]}
-        try:
-            yield "poe_out_voltage", "gauge", float(obj["poe-out-voltage"]), labels
-            yield "poe_out_current", "gauge", int(obj["poe-out-current"]) / 1000.0, labels
-        except KeyError:
-            pass
+    if poe_ports:
+        res = mk.query("/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ",".join([str(j) for j in poe_ports]))
+        async for obj in res:
+            labels = {"host": target, "port": obj["name"]}
+            try:
+                yield "poe_out_voltage", "gauge", float(obj["poe-out-voltage"]), labels
+                yield "poe_out_current", "gauge", int(obj["poe-out-current"]) / 1000.0, labels
+            except KeyError:
+                pass
 
-        labels["status"] = obj["poe-out-status"]
-        yield "poe_out_status", "gauge", 1, labels
+            labels["status"] = obj["poe-out-status"]
+            yield "poe_out_status", "gauge", 1, labels
 
-    mk.talk_sentence(["/system/resource/print"])
-    res = await mk.read_full_answer()
-    for resp, _, obj in res:
-        if resp in ("!trap", "!done"):
-            break
-
+    async for obj in mk.query("/system/resource/print"):
         labels = {"host": target}
         yield "system_write_sect_total", "counter", obj["write-sect-total"], labels
         yield "system_free_memory", "gauge", obj["free-memory"], labels
@@ -154,11 +140,7 @@ async def scrape_mikrotik(target, port):
             labels[key.replace("-", "_")] = obj[key]
         yield "system_version", "gauge", 1, labels
 
-    mk.talk_sentence(["/system/health/print"])
-    res = await mk.read_full_answer()
-    for resp, _, obj in res:
-        if resp in ("!trap", "!done"):
-            break
+    async for obj in mk.query("/system/health/print"):
         for key, value in obj.items():
             labels = {"host": target}
             try:
