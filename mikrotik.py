@@ -150,8 +150,6 @@ async def scrape_mikrotik(target, port):
                 yield "system_health_%s" % key.replace("-", "_"), "gauge", 1, labels
             else:
                 yield "system_health_%s" % key.replace("-", "_"), "gauge", value, labels
-
-    mk.query("/logout")
     mk.close()
 
 
