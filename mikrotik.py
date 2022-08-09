@@ -1,10 +1,11 @@
 #!/usr/bin/env python
+import asyncio
 import os
 from aio_api_ros.connection import ApiRosConnection
-from aiostream import stream
-from sanic import Sanic, response, exceptions
+from sanic import Sanic, exceptions
 
 app = Sanic("exporter")
+pool = {}
 
 PREFIX = os.getenv("PROMETHEUS_PREFIX", "mikrotik_")
 PROMETHEUS_BEARER_TOKEN = os.getenv("PROMETHEUS_BEARER_TOKEN")
@@ -39,20 +40,9 @@ async def wrap(i):
             value)
 
 
-async def scrape_mikrotik(target, port):
-    mk = ApiRosConnection(
-        mk_ip=target,
-        mk_port=port,
-        mk_user=MIKROTIK_USER,
-        mk_psw=MIKROTIK_PASSWORD,
-    )
-    await mk.connect()
-    await mk.login()
-
+async def scrape_mikrotik(mk):
     async for obj in mk.query("/interface/print"):
-
-        labels = {"host": target, "port": obj["name"], "type": obj["type"]}
-
+        labels = {"port": obj["name"], "type": obj["type"]}
         yield "interface_rx_bytes", "counter", obj["rx-byte"], labels
         yield "interface_tx_bytes", "counter", obj["tx-byte"], labels
         yield "interface_rx_packets", "counter", obj["rx-packet"], labels
@@ -67,7 +57,7 @@ async def scrape_mikrotik(target, port):
             yield "interface_tx_drops", "counter", obj["tx-drop"], labels
         except KeyError:
             pass
-        yield "interface_running", "gauge", int(obj["tx-byte"]), labels
+        yield "interface_running", "gauge", int(obj["running"]), labels
         yield "interface_actual_mtu", "gauge", obj["actual-mtu"], labels
 
     port_count = 0
@@ -77,7 +67,7 @@ async def scrape_mikrotik(target, port):
     ports = ",".join([str(j) for j in range(1, port_count)])
 
     async for obj in mk.query("/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports):
-        labels = {"host": target, "port": obj["name"]}
+        labels = {"port": obj["name"]}
 
         try:
             rate = obj["rate"]
@@ -112,12 +102,12 @@ async def scrape_mikrotik(target, port):
     poe_ports = set()
     res = mk.query("/interface/ethernet/poe/print", optional=True)
     async for obj in res:
-        poe_ports.add(int(obj[".id"][1:],16)-1)
+        poe_ports.add(int(obj[".id"][1:], 16) - 1)
 
     if poe_ports:
         res = mk.query("/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ",".join([str(j) for j in poe_ports]))
         async for obj in res:
-            labels = {"host": target, "port": obj["name"]}
+            labels = {"port": obj["name"]}
             try:
                 yield "poe_out_voltage", "gauge", float(obj["poe-out-voltage"]), labels
                 yield "poe_out_current", "gauge", int(obj["poe-out-current"]) / 1000.0, labels
@@ -128,7 +118,7 @@ async def scrape_mikrotik(target, port):
             yield "poe_out_status", "gauge", 1, labels
 
     async for obj in mk.query("/system/resource/print"):
-        labels = {"host": target}
+        labels = {}
         yield "system_write_sect_total", "counter", obj["write-sect-total"], labels
         yield "system_free_memory", "gauge", obj["free-memory"], labels
         try:
@@ -141,19 +131,42 @@ async def scrape_mikrotik(target, port):
         yield "system_version", "gauge", 1, labels
 
     async for obj in mk.query("/system/health/print"):
+        # Normalize ROS6 vs ROS7 difference
+        if "name" in obj:
+            key = obj["name"]
+            value = obj["value"]
+            obj = {}
+            obj[key] = value
         for key, value in obj.items():
-            labels = {"host": target}
-            try:
-                value = float(value)
-            except ValueError:
-                labels["state"] = value
-                yield "system_health_%s" % key.replace("-", "_"), "gauge", 1, labels
+            if key.startswith("board-temperature"):
+                yield "system_health_temperature_celsius", "gauge", \
+                    float(value), {"component": "board%s" % key[17:]}
+            elif key.endswith("temperature"):
+                yield "system_health_temperature_celsius", "gauge", \
+                    float(value), {"component": key[:-12] or "system"}
+            elif key.startswith("fan") and key.endswith("-speed"):
+                yield "system_health_fan_speed_rpm", "gauge", \
+                    float(value), {"component": key[:-6]}
+            elif key.startswith("psu") and key.endswith("-state"):
+                yield "system_health_power_supply_state", "gauge", \
+                    1, {"state": value}
+            elif key.startswith("psu") and key.endswith("-voltage"):
+                yield "system_health_power_supply_voltage", "gauge", \
+                    float(value), {"component": key[:-8]}
+            elif key.startswith("psu") and key.endswith("-current"):
+                yield "system_health_power_supply_current", "gauge", \
+                    float(value), {"component": key[:-8]}
+            elif key == "power-consumption":
+                # Can be calculated from voltage*current
+                pass
+            elif key == "state" or key == "state-after-reboot":
+                # Seems disabled on x86
+                pass
             else:
-                yield "system_health_%s" % key.replace("-", "_"), "gauge", value, labels
-    mk.close()
+                raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
 
 
-@app.route("/metrics")
+@app.route("/metrics", stream=True)
 async def view_export(request):
     if request.token != PROMETHEUS_BEARER_TOKEN:
         raise exceptions.Forbidden("Invalid bearer token")
@@ -165,12 +178,23 @@ async def view_export(request):
         port = int(port)
     else:
         port = 8728
+    response = await request.respond(content_type="text/plain")
 
-    async def streaming_fn(response):
-        async for line in wrap(scrape_mikrotik(target, port)):
-            await response.write(line + "\n")
+    if target not in pool:
+        mk = ApiRosConnection(
+            mk_ip=target,
+            mk_port=port,
+            mk_user=MIKROTIK_USER,
+            mk_psw=MIKROTIK_PASSWORD,
+        )
+        await mk.connect()
+        await mk.login()
+        pool[target] = mk, asyncio.Lock()
+    mk, lock = pool[target]
 
-    return response.stream(streaming_fn, content_type="text/plain")
+    async with lock:
+        async for line in wrap(scrape_mikrotik(mk)):
+            await response.send(line + "\n")
 
 
 app.run(host="0.0.0.0", port=3001)
