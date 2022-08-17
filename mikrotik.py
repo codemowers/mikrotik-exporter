@@ -42,7 +42,7 @@ async def wrap(i):
 
 async def scrape_mikrotik(mk):
     async for obj in mk.query("/interface/print"):
-        labels = {"port": obj["name"], "type": obj["type"]}
+        labels = {"port": obj["name"], "type": obj.get("type", "null")}
         yield "interface_rx_bytes", "counter", obj["rx-byte"], labels
         yield "interface_tx_bytes", "counter", obj["tx-byte"], labels
         yield "interface_rx_packets", "counter", obj["rx-packet"], labels
@@ -161,6 +161,8 @@ async def scrape_mikrotik(mk):
                 pass
             elif key == "state" or key == "state-after-reboot":
                 # Seems disabled on x86
+                pass
+            elif key == "poe-out-consumption":
                 pass
             else:
                 raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
