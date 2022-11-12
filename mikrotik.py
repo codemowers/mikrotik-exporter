@@ -195,8 +195,12 @@ async def view_export(request):
     mk, lock = pool[target]
 
     async with lock:
-        async for line in wrap(scrape_mikrotik(mk)):
-            await response.send(line + "\n")
+        try:
+            async for line in wrap(scrape_mikrotik(mk)):
+                await response.send(line + "\n")
+        except RuntimeError:
+            # Handle TCPTransport closed exception
+            pool.pop(target)
 
 
 app.run(host="0.0.0.0", port=3001)
