@@ -203,4 +203,4 @@ async def view_export(request):
             pool.pop(target)
 
 
-app.run(host="0.0.0.0", port=3001)
+app.run(host="0.0.0.0", port=3001, single_process=True)
