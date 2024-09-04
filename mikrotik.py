@@ -214,6 +214,7 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
+
 class ServiceUnavailableError(exceptions.ServerError):
     status_code = 503
 
@@ -259,15 +260,17 @@ async def view_export(request):
 
             async for line in wrap(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels):
                 await response.send(line + "\n")
+        except aio_api_ros.errors.LoginFailed as e:
+            pool.pop(handle)
+            # Host unreachable, name does not resolve etc
+            raise exceptions.Forbidden(str(e))
         except OSError as e:
             pool.pop(handle)
-            if e.errno == 113: # Host unreachable translates to gateway timeout
-                raise ServiceUnavailableError(e.strerror)
-            else:
-                raise exceptions.ServerError(e.strerror)
+            # Host unreachable, name does not resolve etc
+            raise ServiceUnavailableError(e.strerror)
         except RuntimeError as e:
             # Handle TCPTransport closed exception
             pool.pop(handle)
-            raise exceptions.ServerError(repr(e))
+            raise exceptions.ServerError(str(e))
 
 app.run(host="0.0.0.0", port=3001, single_process=True)
