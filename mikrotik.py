@@ -15,9 +15,10 @@ pool = {}
 
 PREFIX = os.getenv("PROMETHEUS_PREFIX", "mikrotik_")
 
-async def wrap(i):
+async def wrap(i, **extra_labels):
     metrics_seen = set()
     async for name, tp, value, labels in i:
+        labels.update(extra_labels)
         if name not in metrics_seen:
             yield "# TYPE %s %s" % (PREFIX + name, tp)
             metrics_seen.add(name)
@@ -26,7 +27,7 @@ async def wrap(i):
             ("{%s}" % ",".join(["%s=\"%s\"" % j for j in labels.items()]) if labels else ""),
             value)
 
-async def scrape_mikrotik(mk):
+async def scrape_mikrotik(mk, module_full=False):
     async for obj in mk.query("/interface/print"):
         labels = {"port": obj["name"]}
 
@@ -124,7 +125,7 @@ async def scrape_mikrotik(mk):
 
         for key in ("version", "cpu", "cpu-count", "board-name", "architecture-name"):
             labels[key.replace("-", "_")] = obj[key]
-        yield "system_version", "gauge", 1, labels
+        yield "system_version_info", "gauge", 1, labels
 
     async for obj in mk.query("/system/health/print"):
         # Normalize ROS6 vs ROS7 difference
@@ -166,6 +167,10 @@ async def scrape_mikrotik(mk):
             else:
                 raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
 
+    if not module_full:
+        # Specify `module: full` in Probe CRD to pull in extra metrics below
+        return
+
     async for obj in mk.query("/interface/bridge/host/print"):
         try:
             vendor = await oui.lookup(obj["mac-address"])
@@ -181,7 +186,7 @@ async def scrape_mikrotik(mk):
         yield "bridge_host_info", "gauge", 1, labels
 
     async for obj in mk.query("/ip/arp/print"):
-        if obj["status"] in ("failed", "incomplete", ""):
+        if obj.get("status", "") in ("failed", "incomplete", ""):
             continue
         labels = {
             "address": obj["address"],
@@ -208,6 +213,10 @@ async def scrape_mikrotik(mk):
             "status": obj["status"],
         }
         yield "neighbor_host_info", "gauge", 1, labels
+
+class ServiceUnavailableError(exceptions.ServerError):
+    status_code = 503
+
 
 @app.route("/probe", stream=True)
 async def view_export(request):
@@ -244,12 +253,18 @@ async def view_export(request):
         try:
             await mk.connect()
             await mk.login()
-            async for line in wrap(scrape_mikrotik(mk)):
+            global_labels = {}
+            async for obj in mk.query("/system/identity/print"):
+                global_labels["identity_name"] = obj["name"]
+
+            async for line in wrap(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels):
                 await response.send(line + "\n")
         except OSError as e:
-            # Host unreachable
             pool.pop(handle)
-            raise exceptions.ServerError(e.strerror)
+            if e.errno == 113: # Host unreachable translates to gateway timeout
+                raise ServiceUnavailableError(e.strerror)
+            else:
+                raise exceptions.ServerError(e.strerror)
         except RuntimeError as e:
             # Handle TCPTransport closed exception
             pool.pop(handle)

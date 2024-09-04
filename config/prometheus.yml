@@ -5,10 +5,25 @@ global:
 
 scrape_configs:
   - job_name: mikrotik-exporter
-    bearer_token: ZwRZm7Qe6J
-    dns_sd_configs:
-     - names:
-       - '_mikrotik._tcp.mgmt.k-space.ee'
+    metrics_path: /probe
+    params:
+      module:
+        - full
+    basic_auth:
+      username: netpoller
+      password: ...
+    static_configs:
+    - targets:
+        - 172.23.0.1
+        - 172.23.0.100
+        - 100.102.1.111
+        - 100.102.1.112
+        - 100.102.1.114
+        - 100.102.1.115
+        - 100.102.1.121
+        - 100.102.1.131
+        - 100.102.1.141
+        - 100.102.1.151
     relabel_configs:
       - source_labels: [ __address__ ]
         target_label: __param_target
