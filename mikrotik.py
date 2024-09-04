@@ -2,7 +2,7 @@
 import asyncio
 import humanreadable
 import os
-from aio_api_ros.connection import ApiRosConnection
+import aio_api_ros
 from base64 import b64decode
 from sanic import Sanic, exceptions
 import mac_vendor_lookup
@@ -29,10 +29,9 @@ async def wrap(i, **extra_labels):
 
 async def scrape_mikrotik(mk, module_full=False):
     async for obj in mk.query("/interface/print"):
-        labels = {"port": obj["name"]}
+        labels = {"interface": obj["name"]}
 
-        yield "interface_info", "gauge", 1, {
-           "port": obj["name"],
+        yield "interface_info", "gauge", 1, labels | {
            "comment": obj.get("comment", ""),
            "type": obj.get("type", "null")}
            # TODO: Decode state to label
@@ -63,7 +62,7 @@ async def scrape_mikrotik(mk, module_full=False):
     ports = ",".join([str(j) for j in range(1, port_count)])
 
     async for obj in mk.query("/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports):
-        labels = {"port": obj["name"]}
+        labels = {"interface": obj["name"]}
 
         try:
             rate = obj["rate"]
@@ -104,7 +103,7 @@ async def scrape_mikrotik(mk, module_full=False):
     if poe_ports:
         res = mk.query("/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ",".join([str(j) for j in poe_ports]))
         async for obj in res:
-            labels = {"port": obj["name"]}
+            labels = {"interface": obj["name"]}
             try:
                 yield "poe_out_voltage", "gauge", float(obj["poe-out-voltage"]), labels
                 yield "poe_out_current", "gauge", int(obj["poe-out-current"]) / 1000.0, labels
@@ -181,7 +180,7 @@ async def scrape_mikrotik(mk, module_full=False):
             "mac": obj["mac-address"].lower(),
             "interface": obj["interface"],
             "vid": obj.get("vid", ""),
-            "vendor": vendor,
+            "vendor": vendor or "",
         }
         yield "bridge_host_info", "gauge", 1, labels
 
@@ -241,7 +240,7 @@ async def view_export(request):
     handle = target, port, username, password
 
     if handle not in pool:
-        mk = ApiRosConnection(
+        mk = aio_api_ros.connection.ApiRosConnection(
             mk_ip=target,
             mk_port=port,
             mk_user=username,
