@@ -4,9 +4,6 @@ services:
   mikrotik-exporter:
     build:
       context: .
-    env_file: .env
-    environment:
-     - PROMETHEUS_BEARER_TOKEN=ZwRZm7Qe6J
     network_mode: host
   prometheus:
     network_mode: "host"

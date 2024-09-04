@@ -1,32 +1,19 @@
 #!/usr/bin/env python
 import asyncio
+import humanreadable
 import os
 from aio_api_ros.connection import ApiRosConnection
+from base64 import b64decode
 from sanic import Sanic, exceptions
+import mac_vendor_lookup
+
+oui = mac_vendor_lookup.AsyncMacLookup()
+oui.cache_path = "/var/lib/ouilookup"
 
 app = Sanic("exporter")
 pool = {}
 
 PREFIX = os.getenv("PROMETHEUS_PREFIX", "mikrotik_")
-PROMETHEUS_BEARER_TOKEN = os.getenv("PROMETHEUS_BEARER_TOKEN")
-MIKROTIK_USER = os.getenv("MIKROTIK_USER")
-MIKROTIK_PASSWORD = os.getenv("MIKROTIK_PASSWORD")
-
-if not MIKROTIK_USER:
-    raise ValueError("MIKROTIK_USER not specified")
-if not MIKROTIK_PASSWORD:
-    raise ValueError("MIKROTIK_PASSWORD not specified")
-if not PROMETHEUS_BEARER_TOKEN:
-    raise ValueError("No PROMETHEUS_BEARER_TOKEN specified")
-
-RATE_MAPPING = {
-    "40Gbps": 40 * 10 ** 9,
-    "10Gbps": 10 * 10 ** 9,
-    "1Gbps": 10 ** 9,
-    "100Mbps": 100 * 10 ** 6,
-    "10Mbps": 10 * 10 ** 6,
-}
-
 
 async def wrap(i):
     metrics_seen = set()
@@ -39,10 +26,18 @@ async def wrap(i):
             ("{%s}" % ",".join(["%s=\"%s\"" % j for j in labels.items()]) if labels else ""),
             value)
 
-
 async def scrape_mikrotik(mk):
     async for obj in mk.query("/interface/print"):
-        labels = {"port": obj["name"], "type": obj.get("type", "null")}
+        labels = {"port": obj["name"]}
+
+        yield "interface_info", "gauge", 1, {
+           "port": obj["name"],
+           "comment": obj.get("comment", ""),
+           "type": obj.get("type", "null")}
+           # TODO: Decode state to label
+           # TODO: Decode last-link-up-time
+        if not obj["running"] or obj["disabled"]:
+            continue
         yield "interface_rx_bytes", "counter", obj["rx-byte"], labels
         yield "interface_tx_bytes", "counter", obj["tx-byte"], labels
         yield "interface_rx_packets", "counter", obj["rx-packet"], labels
@@ -74,7 +69,8 @@ async def scrape_mikrotik(mk):
         except KeyError:
             pass
         else:
-            yield "interface_rate", "gauge", RATE_MAPPING[rate], labels
+            yield "interface_rate", "gauge", \
+                humanreadable.BitsPerSecond(rate).bps, labels
 
         try:
             labels["sfp_vendor_name"] = obj["sfp-vendor-name"]
@@ -141,6 +137,9 @@ async def scrape_mikrotik(mk):
             if key.startswith("board-temperature"):
                 yield "system_health_temperature_celsius", "gauge", \
                     float(value), {"component": "board%s" % key[17:]}
+            elif key == "fan-state":
+                yield "system_health_fan_state_info", "gauge", 1, \
+                    {"state": value}
             elif key.endswith("temperature"):
                 yield "system_health_temperature_celsius", "gauge", \
                     float(value), {"component": key[:-12] or "system"}
@@ -149,7 +148,7 @@ async def scrape_mikrotik(mk):
                     float(value), {"component": key[:-6]}
             elif key.startswith("psu") and key.endswith("-state"):
                 yield "system_health_power_supply_state", "gauge", \
-                    1, {"state": value}
+                    1, {"state": value, "component": key[:-6]}
             elif key.startswith("psu") and key.endswith("-voltage"):
                 yield "system_health_power_supply_voltage", "gauge", \
                     float(value), {"component": key[:-8]}
@@ -167,11 +166,59 @@ async def scrape_mikrotik(mk):
             else:
                 raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
 
+    async for obj in mk.query("/interface/bridge/host/print"):
+        try:
+            vendor = await oui.lookup(obj["mac-address"])
+        except mac_vendor_lookup.VendorNotFoundError:
+            vendor = ""
 
-@app.route("/metrics", stream=True)
+        labels = {
+            "mac": obj["mac-address"].lower(),
+            "interface": obj["interface"],
+            "vid": obj.get("vid", ""),
+            "vendor": vendor,
+        }
+        yield "bridge_host_info", "gauge", 1, labels
+
+    async for obj in mk.query("/ip/arp/print"):
+        if obj["status"] in ("failed", "incomplete", ""):
+            continue
+        labels = {
+            "address": obj["address"],
+            "version": "4",
+            "mac": obj["mac-address"].lower(),
+            "interface": obj["interface"],
+            "status": obj["status"],
+        }
+        yield "neighbor_host_info", "gauge", 1, labels
+
+    async for obj in mk.query("/ipv6/neighbor/print"):
+        if obj["status"] in ("failed", ""):
+            continue
+        if obj["address"].lower().startswith("ff02:"): # TODO: Make configurable?
+            continue
+        if obj["address"].lower().startswith("fe80:"):
+            continue
+
+        labels = {
+            "address": obj["address"].split("/")[0],
+            "version": "6",
+            "mac": obj["mac-address"].lower(),
+            "interface": obj["interface"],
+            "status": obj["status"],
+        }
+        yield "neighbor_host_info", "gauge", 1, labels
+
+@app.route("/probe", stream=True)
 async def view_export(request):
-    if request.token != PROMETHEUS_BEARER_TOKEN:
-        raise exceptions.Forbidden("Invalid bearer token")
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Basic "):
+        raise exceptions.InvalidUsage("Basic authorization only supported")
+    try:
+        username, password = b64decode(authorization[6:].encode("ascii")).decode("ascii").split(":")
+    except ValueError:
+        raise exceptions.InvalidUsage("Failed to parse basic auth credentials")
+
     target = request.args.get("target")
     if not target:
         raise exceptions.InvalidUsage("Invalid or no target specified")
@@ -181,26 +228,31 @@ async def view_export(request):
     else:
         port = 8728
     response = await request.respond(content_type="text/plain")
+    handle = target, port, username, password
 
-    if target not in pool:
+    if handle not in pool:
         mk = ApiRosConnection(
             mk_ip=target,
             mk_port=port,
-            mk_user=MIKROTIK_USER,
-            mk_psw=MIKROTIK_PASSWORD,
+            mk_user=username,
+            mk_psw=password,
         )
-        await mk.connect()
-        await mk.login()
-        pool[target] = mk, asyncio.Lock()
-    mk, lock = pool[target]
+        pool[handle] = mk, asyncio.Lock()
+    mk, lock = pool[handle]
 
     async with lock:
         try:
+            await mk.connect()
+            await mk.login()
             async for line in wrap(scrape_mikrotik(mk)):
                 await response.send(line + "\n")
-        except RuntimeError:
+        except OSError as e:
+            # Host unreachable
+            pool.pop(handle)
+            raise exceptions.ServerError(e.strerror)
+        except RuntimeError as e:
             # Handle TCPTransport closed exception
-            pool.pop(target)
-
+            pool.pop(handle)
+            raise exceptions.ServerError(repr(e))
 
 app.run(host="0.0.0.0", port=3001, single_process=True)
