@@ -4,11 +4,13 @@ import humanreadable
 import os
 import aio_api_ros
 from base64 import b64decode
+from manuf import manuf
 from sanic import Sanic, exceptions
-import mac_vendor_lookup
 
-oui = mac_vendor_lookup.AsyncMacLookup()
-oui.cache_path = "/var/lib/ouilookup"
+ouilookup = manuf.MacParser()
+assert ouilookup.get_manuf_long("52:54:00:fa:fa:fa") == "QEMU/KVM virtual machine"
+assert ouilookup.get_manuf_long("30:23:03:00:00:01") == "Belkin International Inc."
+assert ouilookup.get_manuf_long("f8:ff:c2:fa:fa:fa") == "Apple, Inc."
 
 app = Sanic("exporter")
 pool = {}
@@ -171,16 +173,11 @@ async def scrape_mikrotik(mk, module_full=False):
         return
 
     async for obj in mk.query("/interface/bridge/host/print"):
-        try:
-            vendor = await oui.lookup(obj["mac-address"])
-        except mac_vendor_lookup.VendorNotFoundError:
-            vendor = ""
-
         labels = {
             "mac": obj["mac-address"].lower(),
             "interface": obj["interface"],
             "vid": obj.get("vid", ""),
-            "vendor": vendor or "",
+            "vendor": ouilookup.get_manuf_long(obj["mac-address"]),
         }
         yield "bridge_host_info", "gauge", 1, labels
 

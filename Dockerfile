@@ -1,6 +1,9 @@
 FROM python:alpine
-RUN wget https://standards-oui.ieee.org/oui/oui.txt -O /var/lib/ouilookup
-RUN pip install sanic humanreadable mac-vendor-lookup
+RUN pip install sanic humanreadable manuf
+WORKDIR /usr/local/lib/python3.12/site-packages/manuf
+RUN rm -fv manuf
+RUN wget https://www.wireshark.org/download/automated/data/manuf -O manuf
+RUN echo -en '52:54:00\tQEMU\tQEMU/KVM virtual machine\n' >> manuf
 ADD aio_api_ros /aio_api_ros
 WORKDIR /aio_api_ros
 RUN pip install .
