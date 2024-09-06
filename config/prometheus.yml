@@ -11,7 +11,7 @@ scrape_configs:
         - full
     basic_auth:
       username: netpoller
-      password: ...
+      password: f7W!H*Pu
     static_configs:
     - targets:
         - 172.23.0.1

@@ -177,7 +177,7 @@ async def scrape_mikrotik(mk, module_full=False):
             "mac": obj["mac-address"].lower(),
             "interface": obj["interface"],
             "vid": obj.get("vid", ""),
-            "vendor": ouilookup.get_manuf_long(obj["mac-address"]),
+            "vendor": ouilookup.get_manuf_long(obj["mac-address"]) or "",
         }
         yield "bridge_host_info", "gauge", 1, labels
 
