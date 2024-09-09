@@ -29,10 +29,33 @@ async def wrap(i, **extra_labels):
             ("{%s}" % ",".join(["%s=\"%s\"" % j for j in labels.items()]) if labels else ""),
             value)
 
+def numbers(i):
+    return "=numbers=%s" % (",".join([str(j) for j in range(0, i)]))
+
 async def scrape_mikrotik(mk, module_full=False):
+    bonds = set()
+    async for obj in mk.query("/interface/bonding/print"):
+        bonds.add((obj[".id"], obj["name"]))
+
+    for bond_id, bond_name in bonds:
+        async for obj in mk.query("/interface/bonding/monitor", "=.id=%s" % bond_id, "=once="):
+            labels = {
+                "parent_interface": bond_name,
+                "lacp_system_id": obj["lacp-system-id"].lower(),
+                "lacp_partner_system_id": obj.get("lacp-partner-system-id", "").lower()
+            }
+
+            if obj["active-ports"]:
+                for port in obj["active-ports"].split(","):
+                    labels["interface"] = port
+                    yield "bond_port_active", "gauge", 1, labels
+            if obj["inactive-ports"]:
+                for port in obj["inactive-ports"].split(","):
+                    labels["interface"] = port
+                    yield "bond_port_active", "gauge", 0, labels
+
     async for obj in mk.query("/interface/print"):
         labels = {"interface": obj["name"]}
-
         yield "interface_info", "gauge", 1, labels | {
            "comment": obj.get("comment", ""),
            "type": obj.get("type", "null")}
@@ -40,38 +63,36 @@ async def scrape_mikrotik(mk, module_full=False):
            # TODO: Decode last-link-up-time
         if not obj["running"] or obj["disabled"]:
             continue
-        yield "interface_rx_bytes", "counter", obj["rx-byte"], labels
-        yield "interface_tx_bytes", "counter", obj["tx-byte"], labels
-        yield "interface_rx_packets", "counter", obj["rx-packet"], labels
-        yield "interface_tx_packets", "counter", obj["tx-packet"], labels
+        yield "interface_received_bytes_total", "counter", obj["rx-byte"], labels
+        yield "interface_transmitted_bytes_total", "counter", obj["tx-byte"], labels
+        yield "interface_received_packets_total", "counter", obj["rx-packet"], labels
+        yield "interface_transmitted_packets_total", "counter", obj["tx-packet"], labels
         try:
-            yield "interface_rx_errors", "counter", obj["rx-error"], labels
-            yield "interface_tx_errors", "counter", obj["tx-error"], labels
+            yield "interface_receive_errors_total", "counter", obj["rx-error"], labels
+            yield "interface_transmit_errors_total", "counter", obj["tx-error"], labels
         except KeyError:
             pass
         try:
-            yield "interface_rx_drops", "counter", obj["rx-drop"], labels
-            yield "interface_tx_drops", "counter", obj["tx-drop"], labels
+            yield "interface_receive_dropped_packets_total", "counter", obj["rx-drop"], labels
+            yield "interface_transmit_dropped_packets_total", "counter", obj["tx-drop"], labels
         except KeyError:
             pass
         yield "interface_running", "gauge", int(obj["running"]), labels
-        yield "interface_actual_mtu", "gauge", obj["actual-mtu"], labels
+        yield "interface_actual_mtu_bytes", "gauge", obj["actual-mtu"], labels
 
     port_count = 0
     res = mk.query("/interface/ethernet/print")
     async for obj in res:
         port_count += 1
-    ports = ",".join([str(j) for j in range(1, port_count)])
 
-    async for obj in mk.query("/interface/ethernet/monitor", "=once=", "=numbers=%s" % ports):
+    async for obj in mk.query("/interface/ethernet/monitor", "=once=", numbers(port_count)):
         labels = {"interface": obj["name"]}
-
         try:
             rate = obj["rate"]
         except KeyError:
             pass
         else:
-            yield "interface_rate", "gauge", \
+            yield "interface_link_rate_bps", "gauge", \
                 humanreadable.BitsPerSecond(rate).bps, labels
 
         try:
@@ -84,9 +105,9 @@ async def scrape_mikrotik(mk, module_full=False):
             pass
 
         try:
-            yield "interface_sfp_temperature", "gauge", obj["sfp-temperature"], labels
-            yield "interface_sfp_tx_power", "gauge", obj["sfp-tx-power"], labels
-            yield "interface_sfp_rx_power", "gauge", obj["sfp-tx-power"], labels
+            yield "interface_sfp_temperature_celsius", "gauge", obj["sfp-temperature"], labels
+            yield "interface_sfp_transmitted_power_dbm", "gauge", obj["sfp-tx-power"], labels
+            yield "interface_sfp_received_power_dbm", "gauge", obj["sfp-tx-power"], labels
         except KeyError:
             pass
 
@@ -97,13 +118,13 @@ async def scrape_mikrotik(mk, module_full=False):
             pass
         yield "interface_status", "gauge", 1, labels
 
-    poe_ports = set()
+    poe_port_count = 0
     res = mk.query("/interface/ethernet/poe/print", optional=True)
     async for obj in res:
-        poe_ports.add(int(obj[".id"][1:], 16) - 1)
+        poe_port_count += 1
 
-    if poe_ports:
-        res = mk.query("/interface/ethernet/poe/monitor", "=once=", "=numbers=%s" % ",".join([str(j) for j in poe_ports]))
+    if poe_port_count:
+        res = mk.query("/interface/ethernet/poe/monitor", "=once=", numbers(poe_port_count))
         async for obj in res:
             labels = {"interface": obj["name"]}
             try:
@@ -117,10 +138,10 @@ async def scrape_mikrotik(mk, module_full=False):
 
     async for obj in mk.query("/system/resource/print"):
         labels = {}
-        yield "system_write_sect_total", "counter", obj["write-sect-total"], labels
-        yield "system_free_memory", "gauge", obj["free-memory"], labels
+        yield "system_written_sectors_total", "counter", obj["write-sect-total"], labels
+        yield "system_free_memory_bytes", "gauge", obj["free-memory"], labels
         try:
-            yield "system_bad_blocks", "counter", obj["bad-blocks"], labels
+            yield "system_bad_blocks_total", "counter", obj["bad-blocks"], labels
         except KeyError:
             pass
 
@@ -252,7 +273,7 @@ async def view_export(request):
             await mk.login()
             global_labels = {}
             async for obj in mk.query("/system/identity/print"):
-                global_labels["identity_name"] = obj["name"]
+                global_labels["identity"] = obj["name"]
 
             async for line in wrap(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels):
                 await response.send(line + "\n")
