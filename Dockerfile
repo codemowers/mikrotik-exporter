@@ -1,6 +1,6 @@
 FROM python:alpine
 RUN pip install sanic humanreadable manuf
-WORKDIR /usr/local/lib/python3.12/site-packages/manuf
+WORKDIR /usr/local/lib/python3.13/site-packages/manuf
 RUN rm -fv manuf
 RUN wget https://www.wireshark.org/download/automated/data/manuf -O manuf
 RUN echo -en '52:54:00\tQEMU\tQEMU/KVM virtual machine\n' >> manuf

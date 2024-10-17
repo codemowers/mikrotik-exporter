@@ -4,13 +4,17 @@ import humanreadable
 import os
 import aio_api_ros
 from base64 import b64decode
+from collections import Counter
 from manuf import manuf
-from sanic import Sanic, exceptions
+from sanic import Sanic, HTTPResponse, exceptions
 
 ouilookup = manuf.MacParser()
-assert ouilookup.get_manuf_long("52:54:00:fa:fa:fa") == "QEMU/KVM virtual machine"
-assert ouilookup.get_manuf_long("30:23:03:00:00:01") == "Belkin International Inc."
-assert ouilookup.get_manuf_long("f8:ff:c2:fa:fa:fa") == "Apple, Inc."
+m = ouilookup.get_manuf_long("52:54:00:fa:fa:fa")
+assert m == "QEMU/KVM virtual machine", m
+m = ouilookup.get_manuf_long("30:23:03:00:00:01")
+assert m == "Belkin International Inc.", m
+m = ouilookup.get_manuf_long("f8:ff:c2:fa:fa:fa")
+assert m == "Apple, Inc."
 
 app = Sanic("exporter")
 pool = {}
@@ -33,8 +37,62 @@ def numbers(i):
     return "=numbers=%s" % (",".join([str(j) for j in range(0, i)]))
 
 async def scrape_mikrotik(mk, module_full=False):
+    async for obj in mk.query("/system/resource/print"):
+        labels = {}
+        yield "system_written_sectors_total", "counter", obj["write-sect-total"], labels
+        yield "system_free_memory_bytes", "gauge", obj["free-memory"], labels
+        try:
+            yield "system_bad_blocks_total", "counter", obj["bad-blocks"], labels
+        except KeyError:
+            pass
+
+        for key in ("version", "cpu", "cpu-count", "board-name", "architecture-name"):
+            labels[key.replace("-", "_")] = obj[key]
+        yield "system_version_info", "gauge", 1, labels
+
+    async for obj in mk.query("/system/health/print"):
+        # Normalize ROS6 vs ROS7 difference
+        if "name" in obj:
+            key = obj["name"]
+            value = obj["value"]
+            obj = {}
+            obj[key] = value
+        for key, value in obj.items():
+            if key.startswith("board-temperature"):
+                yield "system_health_temperature_celsius", "gauge", \
+                    float(value), {"component": "board%s" % key[17:]}
+            elif key == "fan-state":
+                yield "system_health_fan_state_info", "gauge", 1, \
+                    {"state": value}
+            elif key.endswith("temperature"):
+                yield "system_health_temperature_celsius", "gauge", \
+                    float(value), {"component": key[:-12] or "system"}
+            elif key.startswith("fan") and key.endswith("-speed"):
+                yield "system_health_fan_speed_rpm", "gauge", \
+                    float(value), {"component": key[:-6]}
+            elif key.startswith("psu") and key.endswith("-state"):
+                yield "system_health_power_supply_state", "gauge", \
+                    1, {"state": value, "component": key[:-6]}
+            elif key.startswith("psu") and key.endswith("-voltage"):
+                yield "system_health_power_supply_voltage", "gauge", \
+                    float(value), {"component": key[:-8]}
+            elif key.startswith("psu") and key.endswith("-current"):
+                yield "system_health_power_supply_current", "gauge", \
+                    float(value), {"component": key[:-8]}
+            elif key == "power-consumption":
+                # Can be calculated from voltage*current
+                pass
+            elif key == "state" or key == "state-after-reboot":
+                # Seems disabled on x86
+                pass
+            elif key == "poe-out-consumption":
+                pass
+            else:
+                raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
+
     bonds = set()
     async for obj in mk.query("/interface/bonding/print"):
+        assert ".id" in obj, obj
         bonds.add((obj[".id"], obj["name"]))
 
     for bond_id, bond_name in bonds:
@@ -136,59 +194,6 @@ async def scrape_mikrotik(mk, module_full=False):
             labels["status"] = obj["poe-out-status"]
             yield "poe_out_status", "gauge", 1, labels
 
-    async for obj in mk.query("/system/resource/print"):
-        labels = {}
-        yield "system_written_sectors_total", "counter", obj["write-sect-total"], labels
-        yield "system_free_memory_bytes", "gauge", obj["free-memory"], labels
-        try:
-            yield "system_bad_blocks_total", "counter", obj["bad-blocks"], labels
-        except KeyError:
-            pass
-
-        for key in ("version", "cpu", "cpu-count", "board-name", "architecture-name"):
-            labels[key.replace("-", "_")] = obj[key]
-        yield "system_version_info", "gauge", 1, labels
-
-    async for obj in mk.query("/system/health/print"):
-        # Normalize ROS6 vs ROS7 difference
-        if "name" in obj:
-            key = obj["name"]
-            value = obj["value"]
-            obj = {}
-            obj[key] = value
-        for key, value in obj.items():
-            if key.startswith("board-temperature"):
-                yield "system_health_temperature_celsius", "gauge", \
-                    float(value), {"component": "board%s" % key[17:]}
-            elif key == "fan-state":
-                yield "system_health_fan_state_info", "gauge", 1, \
-                    {"state": value}
-            elif key.endswith("temperature"):
-                yield "system_health_temperature_celsius", "gauge", \
-                    float(value), {"component": key[:-12] or "system"}
-            elif key.startswith("fan") and key.endswith("-speed"):
-                yield "system_health_fan_speed_rpm", "gauge", \
-                    float(value), {"component": key[:-6]}
-            elif key.startswith("psu") and key.endswith("-state"):
-                yield "system_health_power_supply_state", "gauge", \
-                    1, {"state": value, "component": key[:-6]}
-            elif key.startswith("psu") and key.endswith("-voltage"):
-                yield "system_health_power_supply_voltage", "gauge", \
-                    float(value), {"component": key[:-8]}
-            elif key.startswith("psu") and key.endswith("-current"):
-                yield "system_health_power_supply_current", "gauge", \
-                    float(value), {"component": key[:-8]}
-            elif key == "power-consumption":
-                # Can be calculated from voltage*current
-                pass
-            elif key == "state" or key == "state-after-reboot":
-                # Seems disabled on x86
-                pass
-            elif key == "poe-out-consumption":
-                pass
-            else:
-                raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
-
     if not module_full:
         # Specify `module: full` in Probe CRD to pull in extra metrics below
         return
@@ -232,7 +237,7 @@ async def scrape_mikrotik(mk, module_full=False):
         yield "neighbor_host_info", "gauge", 1, labels
 
 
-class ServiceUnavailableError(exceptions.ServerError):
+class ServiceUnavailableError(exceptions.SanicException):
     status_code = 503
 
 
@@ -254,40 +259,35 @@ async def view_export(request):
         port = int(port)
     else:
         port = 8728
-    response = await request.respond(content_type="text/plain")
-    handle = target, port, username, password
 
-    if handle not in pool:
-        mk = aio_api_ros.connection.ApiRosConnection(
-            mk_ip=target,
-            mk_port=port,
-            mk_user=username,
-            mk_psw=password,
-        )
-        pool[handle] = mk, asyncio.Lock()
-    mk, lock = pool[handle]
+    mk = aio_api_ros.connection.ApiRosConnection(
+        mk_ip=target,
+        mk_port=port,
+        mk_user=username,
+        mk_psw=password,
+    )
 
-    async with lock:
-        try:
-            await mk.connect()
-            await mk.login()
-            global_labels = {}
-            async for obj in mk.query("/system/identity/print"):
-                global_labels["identity"] = obj["name"]
+    try:
+        await mk.connect()
+        global_labels = {}
+        async for obj in mk.query("/system/identity/print"):
+            global_labels["identity"] = obj["name"]
+        response = await request.respond(content_type="text/plain")
+        async for line in wrap(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels):
+            await response.send(line + "\n")
 
-            async for line in wrap(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels):
-                await response.send(line + "\n")
-        except aio_api_ros.errors.LoginFailed as e:
-            pool.pop(handle)
-            # Host unreachable, name does not resolve etc
-            raise exceptions.Forbidden(str(e))
-        except OSError as e:
-            pool.pop(handle)
-            # Host unreachable, name does not resolve etc
-            raise ServiceUnavailableError(e.strerror)
-        except RuntimeError as e:
-            # Handle TCPTransport closed exception
-            pool.pop(handle)
-            raise exceptions.ServerError(str(e))
+    except aio_api_ros.errors.LoginFailed as e:
+        # Host unreachable, name does not resolve etc
+        return HTTPResponse(str(e), 403)
+    except ConnectionResetError as e:
+        return HTTPResponse(e.strerror, 503)
+    except OSError as e:
+        # Host unreachable, name does not resolve etc
+        return HTTPResponse(e.strerror, 503)
+    except RuntimeError as e:
+        # Handle TCPTransport closed exception
+        return HTTPResponse(str(e), 503)
+    finally:
+        mk.close()
 
 app.run(host="0.0.0.0", port=8728, single_process=True)
