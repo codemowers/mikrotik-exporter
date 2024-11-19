@@ -236,6 +236,22 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
+    async for obj in mk.query("/interface/ethernet/print", "=stats="):
+        labels = {"interface": obj["name"]}
+        yield "interface_receive_fcs_errors", "counter", obj["rx-fcs-error"], labels
+        acc = obj["tx-rx-64"]
+        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "64"}
+        acc += obj["tx-rx-65-127"]
+        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "127"}
+        acc += obj["tx-rx-128-255"]
+        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "255"}
+        acc += obj["tx-rx-256-511"]
+        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "511"}
+        acc += obj["tx-rx-512-1023"]
+        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "1023"}
+        acc += obj["tx-rx-1024-max"]
+        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "+Inf"}
+
 
 class ServiceUnavailableError(exceptions.SanicException):
     status_code = 503
