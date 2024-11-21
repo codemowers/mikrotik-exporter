@@ -21,6 +21,16 @@ pool = {}
 
 PREFIX = os.getenv("PROMETHEUS_PREFIX", "mikrotik_")
 
+# https://help.mikrotik.com/docs/spaces/ROS/pages/8323191/Ethernet
+ETHERNET_RECEIVE_ERROR_REASONS = "align-error", "carrier-error", "code-error", \
+    "error-events", "fcs-error", "fragment", "ip-header-checksum-error", \
+    "jabber", "length-error", "overflow", "runt", "tcp-checksum-error", \
+    "too-long", "too-short", "udp-checksum-error", "unknown-op"
+ETHERNET_TRANSMIT_ERROR_REASONS = "align-error", "collisions", "deferred", \
+    "drop", "excessive-collision", "excessive-deferred", "fcs-error", \
+    "fragment", "carrier-sense-error", "late-collsion", "multiple-collision", \
+    "overflow", "runt", "too-short", "single-collision", "too-long", "underrun"
+
 async def wrap(i, **extra_labels):
     metrics_seen = set()
     async for name, tp, value, labels in i:
@@ -165,7 +175,7 @@ async def scrape_mikrotik(mk, module_full=False):
         try:
             yield "interface_sfp_temperature_celsius", "gauge", obj["sfp-temperature"], labels
             yield "interface_sfp_transmitted_power_dbm", "gauge", obj["sfp-tx-power"], labels
-            yield "interface_sfp_received_power_dbm", "gauge", obj["sfp-tx-power"], labels
+            yield "interface_sfp_received_power_dbm", "gauge", obj["sfp-rx-power"], labels
         except KeyError:
             pass
 
@@ -238,19 +248,46 @@ async def scrape_mikrotik(mk, module_full=False):
 
     async for obj in mk.query("/interface/ethernet/print", "=stats="):
         labels = {"interface": obj["name"]}
-        yield "interface_receive_fcs_errors", "counter", obj["rx-fcs-error"], labels
-        acc = obj["tx-rx-64"]
-        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "64"}
-        acc += obj["tx-rx-65-127"]
-        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "127"}
-        acc += obj["tx-rx-128-255"]
-        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "255"}
-        acc += obj["tx-rx-256-511"]
-        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "511"}
-        acc += obj["tx-rx-512-1023"]
-        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "1023"}
-        acc += obj["tx-rx-1024-max"]
-        yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": "+Inf"}
+        for tp in "control", "pause", "broadcast", "multicast", "pause", "unicast":
+            key = "rx-%s" % tp
+            if key not in obj:
+                continue
+            yield "interface_received_packets_by_type_total", "counter", \
+                obj[key], labels | {"type": tp}
+            key = "tx-%s" % tp
+            if key not in obj:
+                continue
+            yield "interface_transmitted_packets_by_type_total", "counter", \
+                obj[key], labels | {"type": tp}
+
+        for reason in ETHERNET_RECEIVE_ERROR_REASONS:
+            key = "rx-%s" % reason
+            if key not in obj:
+                continue
+            yield "interface_receive_errors_by_reason_total", "counter", \
+                obj[key], labels | {"reason": reason}
+
+        for reason in ETHERNET_TRANSMIT_ERROR_REASONS:
+            key = "rx-%s" % reason
+            if key not in obj:
+                continue
+            yield "interface_transmit_errors_by_reason_total", "counter", \
+                obj[key], labels | {"reason": reason}
+
+        acc = 0
+        for le in (64, 127, 255, 511, 1023, "+Inf"):
+            if le == "+Inf":
+                i, j = "1024", "max"
+            else:
+                i, j = str((le + 1) >> 1), str(le)
+            for mode in "tx-rx", "tx", "rx":
+                if le == 64:
+                    key = "%s-%s" % (mode, 64)
+                else:
+                    key = "%s-%s-%s" % (mode, i, j)
+                if key in obj:
+                    acc += obj[key]
+            yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": le}
 
 
 class ServiceUnavailableError(exceptions.SanicException):
