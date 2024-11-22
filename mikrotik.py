@@ -278,6 +278,8 @@ async def scrape_mikrotik(mk, module_full=False):
         for le in (64, 127, 255, 511, 1023, "+Inf"):
             if le == "+Inf":
                 i, j = "1024", "max"
+            elif le == 127:
+                i, j = "65", "127"
             else:
                 i, j = str((le + 1) >> 1), str(le)
             for mode in "tx-rx", "tx", "rx":
