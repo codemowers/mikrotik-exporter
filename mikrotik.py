@@ -125,7 +125,7 @@ async def scrape_mikrotik(mk, module_full=False):
     stats_sent = set()
     async for obj in mk.query("/interface/ethernet/print", "=stats="):
         labels = {"interface": obj["name"]}
-        for tp in "control", "pause", "broadcast", "multicast", "pause", "unicast":
+        for tp in "control", "pause", "broadcast", "multicast", "unicast":
             key = "rx-%s" % tp
             if key not in obj:
                 continue
