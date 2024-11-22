@@ -290,7 +290,7 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
-    async for obj in mk.query("/ipv6/neighbor/print"):
+    async for obj in mk.query("/ipv6/neighbor/print", optional=True):
         if obj["status"] in ("failed", ""):
             continue
         if obj["address"].lower().startswith("ff02:"): # TODO: Make configurable?
