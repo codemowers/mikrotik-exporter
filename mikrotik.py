@@ -122,7 +122,56 @@ async def scrape_mikrotik(mk, module_full=False):
                     labels["interface"] = port
                     yield "bond_port_active", "gauge", 0, labels
 
-    async for obj in mk.query("/interface/print"):
+    stats_sent = set()
+    async for obj in mk.query("/interface/ethernet/print", "=stats="):
+        labels = {"interface": obj["name"]}
+        for tp in "control", "pause", "broadcast", "multicast", "pause", "unicast":
+            key = "rx-%s" % tp
+            if key not in obj:
+                continue
+            yield "interface_received_packets_by_type_total", "counter", \
+                obj[key], labels | {"type": tp}
+            key = "tx-%s" % tp
+            if key not in obj:
+                continue
+            yield "interface_transmitted_packets_by_type_total", "counter", \
+                obj[key], labels | {"type": tp}
+
+        for reason in ETHERNET_RECEIVE_ERROR_REASONS:
+            key = "rx-%s" % reason
+            if key not in obj:
+                continue
+            yield "interface_receive_errors_by_reason_total", "counter", \
+                obj[key], labels | {"reason": reason}
+            stats_sent.add((obj["name"], key))
+
+        for reason in ETHERNET_TRANSMIT_ERROR_REASONS:
+            key = "rx-%s" % reason
+            if key not in obj:
+                continue
+            yield "interface_transmit_errors_by_reason_total", "counter", \
+                obj[key], labels | {"reason": reason}
+            stats_sent.add((obj["name"], key))
+
+        acc = 0
+        for le in (64, 127, 255, 511, 1023, "+Inf"):
+            if le == "+Inf":
+                i, j = "1024", "max"
+            elif le == 127:
+                i, j = "65", "127"
+            else:
+                i, j = str((le + 1) >> 1), str(le)
+            for mode in "tx-rx", "tx", "rx":
+                if le == 64:
+                    key = "%s-%s" % (mode, 64)
+                else:
+                    key = "%s-%s-%s" % (mode, i, j)
+                print(key, "=>>", le)
+                if key in obj:
+                    acc += obj[key]
+            yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": le}
+
+    async for obj in mk.query("/interface/print", "=stats="):
         labels = {"interface": obj["name"]}
         yield "interface_info", "gauge", 1, labels | {
            "comment": obj.get("comment", ""),
@@ -135,16 +184,28 @@ async def scrape_mikrotik(mk, module_full=False):
         yield "interface_transmitted_bytes_total", "counter", obj["tx-byte"], labels
         yield "interface_received_packets_total", "counter", obj["rx-packet"], labels
         yield "interface_transmitted_packets_total", "counter", obj["tx-packet"], labels
+
+        if "rx-drop" in obj:
+            if (obj["name"], "rx-drop") not in stats_sent:
+                yield "interface_receive_errors_by_reason_total", "counter", \
+                    obj["rx-drop"], labels | {"reason": "drop"}
+        if "tx-drop" in obj:
+            if (obj["name"], "tx-drop") not in stats_sent:
+                yield "interface_transmit_errors_by_reason_total", "counter", \
+                    obj["tx-drop"], labels | {"reason": "drop"}
+        if "rx-queue-drop" in obj:
+            yield "interface_receive_errors_by_reason_total", "counter", \
+                obj["rx-queue-drop"], labels | {"reason": "queue-drop"}
+        if "tx-queue-drop" in obj:
+            yield "interface_transmit_errors_by_reason_total", "counter", \
+                obj["tx-queue-drop"], labels | {"reason": "queue-drop"}
+
         try:
             yield "interface_receive_errors_total", "counter", obj["rx-error"], labels
             yield "interface_transmit_errors_total", "counter", obj["tx-error"], labels
         except KeyError:
             pass
-        try:
-            yield "interface_receive_dropped_packets_total", "counter", obj["rx-drop"], labels
-            yield "interface_transmit_dropped_packets_total", "counter", obj["tx-drop"], labels
-        except KeyError:
-            pass
+
         yield "interface_running", "gauge", int(obj["running"]), labels
         yield "interface_actual_mtu_bytes", "gauge", obj["actual-mtu"], labels
 
@@ -245,51 +306,6 @@ async def scrape_mikrotik(mk, module_full=False):
             "status": obj["status"],
         }
         yield "neighbor_host_info", "gauge", 1, labels
-
-    async for obj in mk.query("/interface/ethernet/print", "=stats="):
-        labels = {"interface": obj["name"]}
-        for tp in "control", "pause", "broadcast", "multicast", "pause", "unicast":
-            key = "rx-%s" % tp
-            if key not in obj:
-                continue
-            yield "interface_received_packets_by_type_total", "counter", \
-                obj[key], labels | {"type": tp}
-            key = "tx-%s" % tp
-            if key not in obj:
-                continue
-            yield "interface_transmitted_packets_by_type_total", "counter", \
-                obj[key], labels | {"type": tp}
-
-        for reason in ETHERNET_RECEIVE_ERROR_REASONS:
-            key = "rx-%s" % reason
-            if key not in obj:
-                continue
-            yield "interface_receive_errors_by_reason_total", "counter", \
-                obj[key], labels | {"reason": reason}
-
-        for reason in ETHERNET_TRANSMIT_ERROR_REASONS:
-            key = "rx-%s" % reason
-            if key not in obj:
-                continue
-            yield "interface_transmit_errors_by_reason_total", "counter", \
-                obj[key], labels | {"reason": reason}
-
-        acc = 0
-        for le in (64, 127, 255, 511, 1023, "+Inf"):
-            if le == "+Inf":
-                i, j = "1024", "max"
-            elif le == 127:
-                i, j = "65", "127"
-            else:
-                i, j = str((le + 1) >> 1), str(le)
-            for mode in "tx-rx", "tx", "rx":
-                if le == 64:
-                    key = "%s-%s" % (mode, 64)
-                else:
-                    key = "%s-%s-%s" % (mode, i, j)
-                if key in obj:
-                    acc += obj[key]
-            yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": le}
 
 
 class ServiceUnavailableError(exceptions.SanicException):
