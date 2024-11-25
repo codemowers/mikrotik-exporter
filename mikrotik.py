@@ -166,7 +166,6 @@ async def scrape_mikrotik(mk, module_full=False):
                     key = "%s-%s" % (mode, 64)
                 else:
                     key = "%s-%s-%s" % (mode, i, j)
-                print(key, "=>>", le)
                 if key in obj:
                     acc += obj[key]
             yield "interface_packet_size_bytes_bucket", "counter", acc, labels | {"le": le}
@@ -279,14 +278,13 @@ async def scrape_mikrotik(mk, module_full=False):
         yield "bridge_host_info", "gauge", 1, labels
 
     async for obj in mk.query("/ip/arp/print"):
-        if obj.get("status", "") in ("failed", "incomplete", ""):
+        if not obj.get("complete", False):
             continue
         labels = {
             "address": obj["address"],
             "version": "4",
             "mac": obj["mac-address"].lower(),
             "interface": obj["interface"],
-            "status": obj["status"],
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
@@ -303,7 +301,6 @@ async def scrape_mikrotik(mk, module_full=False):
             "version": "6",
             "mac": obj["mac-address"].lower(),
             "interface": obj["interface"],
-            "status": obj["status"],
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
