@@ -60,6 +60,27 @@ async def scrape_mikrotik(mk, module_full=False):
             labels[key.replace("-", "_")] = obj[key]
         yield "system_version_info", "gauge", 1, labels
 
+    async for obj in mk.query("/interface/bridge/port/print"):
+        if obj.get("forwarding", False):
+            state = "forwarding"
+        elif obj.get("learning", False):
+            state = "learning"
+        elif obj.get("inactive", False):
+            state = "inactive"
+        elif obj.get("disabled", False):
+            state = "disabled";
+        else:
+            state = "unknown"
+
+        labels = {
+            "interface": obj["interface"],
+            "bridge": obj["bridge"],
+            "state": state,
+            "multicast_router": obj["multicast-router"],
+            "role": obj.get("role", "inactive"),
+        }
+        yield "bridge_port_info", "gauge", 1, labels
+
     async for obj in mk.query("/system/health/print"):
         # Normalize ROS6 vs ROS7 difference
         if "name" in obj:
