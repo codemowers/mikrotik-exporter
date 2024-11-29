@@ -78,7 +78,8 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "bridge_info", "gauge", 1, labels | {
             "protocol-mode": obj["protocol-mode"],
-            "frame-types": obj["frame-types"],
+            "multicast-router": obj.get("multicast-router", ""),
+            "frame-types": obj.get("frame-types", ""),
             "port-cost-mode": obj["port-cost-mode"],
             "comment": obj.get("comment", ""),
         }
