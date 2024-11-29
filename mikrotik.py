@@ -89,7 +89,8 @@ async def scrape_mikrotik(mk, module_full=False):
         yield "bridge_vlan_filtering_enabled", "gauge", int(obj["vlan-filtering"]), labels
         yield "bridge_igmp_snooping_enabled", "gauge", int(obj["igmp-snooping"]), labels
         yield "bridge_dhcp_snooping_enabled", "gauge", int(obj["dhcp-snooping"]), labels
-        yield "bridge_ingress_filtering_enabled", "gauge", int(obj["ingress-filtering"]), labels
+        if "ingress-filtering" in obj:
+            yield "bridge_ingress_filtering_enabled", "gauge", int(obj["ingress-filtering"]), labels
 
 
     async for obj in mk.query("/interface/bridge/port/print"):
