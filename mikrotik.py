@@ -40,7 +40,7 @@ async def wrap(i, **extra_labels):
             metrics_seen.add(name)
         yield "%s%s %s" % (
             PREFIX + name,
-            ("{%s}" % ",".join(["%s=\"%s\"" % j for j in labels.items()]) if labels else ""),
+            ("{%s}" % ",".join(["%s=\"%s\"" % (j[0].replace("-", "_"), j[1]) for j in labels.items()]) if labels else ""),
             value)
 
 def numbers(i):
@@ -59,6 +59,37 @@ async def scrape_mikrotik(mk, module_full=False):
         for key in ("version", "cpu", "cpu-count", "board-name", "architecture-name"):
             labels[key.replace("-", "_")] = obj[key]
         yield "system_version_info", "gauge", 1, labels
+
+    async for obj in mk.query("/interface/bonding/print"):
+        labels = {
+            "name": obj["name"]
+        }
+        yield "bonding_info", "gauge", 1, labels | {
+            "mode": obj["mode"],
+            "transmit-hash-policy": obj["transmit-hash-policy"],
+            "link-monitoring": obj["link-monitoring"],
+            "comment": obj.get("comment", ""),
+        }
+        yield "bonding_arp_enabled", "gauge", int(obj["arp"] == "enabled"), labels
+
+    async for obj in mk.query("/interface/bridge/print"):
+        labels = {
+            "name": obj["name"]
+        }
+        yield "bridge_info", "gauge", 1, labels | {
+            "protocol-mode": obj["protocol-mode"],
+            "frame-types": obj["frame-types"],
+            "port-cost-mode": obj["port-cost-mode"],
+            "comment": obj.get("comment", ""),
+        }
+        if "priority" in obj:
+            yield "bridge_priority", "gauge", int(obj["priority"][2:], 16), labels
+        yield "bridge_arp_enabled", "gauge", int(obj["arp"] == "enabled"), labels
+        yield "bridge_vlan_filtering_enabled", "gauge", int(obj["vlan-filtering"]), labels
+        yield "bridge_igmp_snooping_enabled", "gauge", int(obj["igmp-snooping"]), labels
+        yield "bridge_dhcp_snooping_enabled", "gauge", int(obj["dhcp-snooping"]), labels
+        yield "bridge_ingress_filtering_enabled", "gauge", int(obj["ingress-filtering"]), labels
+
 
     async for obj in mk.query("/interface/bridge/port/print"):
         if obj.get("forwarding", False):
@@ -137,11 +168,11 @@ async def scrape_mikrotik(mk, module_full=False):
             if obj["active-ports"]:
                 for port in obj["active-ports"].split(","):
                     labels["interface"] = port
-                    yield "bond_port_active", "gauge", 1, labels
+                    yield "bonding_port_active", "gauge", 1, labels
             if obj["inactive-ports"]:
                 for port in obj["inactive-ports"].split(","):
                     labels["interface"] = port
-                    yield "bond_port_active", "gauge", 0, labels
+                    yield "bonding_port_active", "gauge", 0, labels
 
     stats_sent = set()
     async for obj in mk.query("/interface/ethernet/print", "=stats="):
