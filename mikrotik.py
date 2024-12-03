@@ -80,7 +80,7 @@ async def scrape_mikrotik(mk, module_full=False):
             "protocol-mode": obj["protocol-mode"],
             "multicast-router": obj.get("multicast-router", ""),
             "frame-types": obj.get("frame-types", ""),
-            "port-cost-mode": obj["port-cost-mode"],
+            "port-cost-mode": obj.get("port-cost-mode", ""),
             "comment": obj.get("comment", ""),
         }
         if "priority" in obj:
