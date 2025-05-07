@@ -153,12 +153,9 @@ async def scrape_mikrotik(mk, module_full=False):
             elif key.startswith("psu") and key.endswith("-state"):
                 yield "system_health_power_supply_state", "gauge", \
                     1, {"state": value, "component": key[:-6]}
-            elif key.startswith("psu") and key.endswith("-voltage"):
+            elif key.endswith("-voltage") or key == "voltage":
                 yield "system_health_power_supply_voltage", "gauge", \
-                    float(value), {"component": key[:-8]}
-            elif key == "voltage":
-                yield "system_health_power_supply_voltage", "gauge", \
-                    float(value), {"component": "system"}
+                    float(value), {"component": key[:-8] or "system"}
             elif key.startswith("psu") and key.endswith("-current"):
                 yield "system_health_power_supply_current", "gauge", \
                     float(value), {"component": key[:-8]}
@@ -171,7 +168,7 @@ async def scrape_mikrotik(mk, module_full=False):
             elif key == "poe-out-consumption":
                 pass
             else:
-                raise NotImplementedError("Don't know how to handle system health record %s" % repr(key))
+                logger.info("Don't know how to handle system health record %s", repr(key))
 
     bonds = set()
     async for obj in mk.query("/interface/bonding/print"):
