@@ -50,7 +50,7 @@ async def scrape_mikrotik(mk, module_full=False):
     labels = {}
     async for obj in mk.query("/system/routerboard/print"):
         for key in ("board-name", "model", "revision", "serial-number", "firmware-type", "factory-firmware"):
-            labels[key] = obj[key]
+            labels[key] = obj.get(key, "")
         yield "system_hardware_info", "gauge", 1, labels
         break
 
