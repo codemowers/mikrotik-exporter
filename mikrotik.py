@@ -7,6 +7,7 @@ from base64 import b64decode
 from collections import Counter
 from manuf import manuf
 from sanic import Sanic, HTTPResponse, exceptions
+from sanic.log import logger
 
 ouilookup = manuf.MacParser()
 m = ouilookup.get_manuf_long("52:54:00:fa:fa:fa")
@@ -17,7 +18,6 @@ m = ouilookup.get_manuf_long("f8:ff:c2:fa:fa:fa")
 assert m == "Apple, Inc."
 
 app = Sanic("exporter")
-pool = {}
 
 PREFIX = os.getenv("PROMETHEUS_PREFIX", "mikrotik_")
 
@@ -31,17 +31,19 @@ ETHERNET_TRANSMIT_ERROR_REASONS = "align-error", "collisions", "deferred", \
     "fragment", "carrier-sense-error", "late-collsion", "multiple-collision", \
     "overflow", "runt", "too-short", "single-collision", "too-long", "underrun"
 
-async def wrap(i, **extra_labels):
+async def render(i, **extra_labels):
+    buf = ""
     metrics_seen = set()
     async for name, tp, value, labels in i:
         labels.update(extra_labels)
         if name not in metrics_seen:
-            yield "# TYPE %s %s" % (PREFIX + name, tp)
+            buf += "# TYPE %s %s\n" % (PREFIX + name, tp)
             metrics_seen.add(name)
-        yield "%s%s %s" % (
+        buf += "%s%s %s\n" % (
             PREFIX + name,
             ("{%s}" % ",".join(["%s=\"%s\"" % (j[0].replace("-", "_"), j[1]) for j in labels.items()]) if labels else ""),
             value)
+    return buf
 
 def numbers(i):
     return "=numbers=%s" % (",".join([str(j) for j in range(0, i)]))
@@ -416,20 +418,23 @@ async def view_export(request):
         global_labels = {}
         async for obj in mk.query("/system/identity/print"):
             global_labels["identity"] = obj["name"]
+        buf = await render(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels)
         response = await request.respond(content_type="text/plain")
-        async for line in wrap(scrape_mikrotik(mk, module_full=request.args.get("module") == "full"), **global_labels):
-            await response.send(line + "\n")
-
+        await response.send(buf)
     except aio_api_ros.errors.LoginFailed as e:
+        logger.info("Login failed while scraping %s: %s", target, e)
         # Host unreachable, name does not resolve etc
         return HTTPResponse(str(e), 403)
     except ConnectionResetError as e:
+        logger.info("Connection reset while scraping: %s", target, e)
         return HTTPResponse(e.strerror, 503)
     except OSError as e:
+        logger.info("OS error while scraping %s: %s", target, e.strerror)
         # Host unreachable, name does not resolve etc
         return HTTPResponse(e.strerror, 503)
     except RuntimeError as e:
         # Handle TCPTransport closed exception
+        logger.info("Runtime error while scraping %s: %s", target, e)
         return HTTPResponse(str(e), 503)
     finally:
         mk.close()
