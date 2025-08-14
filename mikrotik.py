@@ -48,7 +48,7 @@ async def render(i, **extra_labels):
 def numbers(i):
     return "=numbers=%s" % (",".join([str(j) for j in range(0, i)]))
 
-async def scrape_mikrotik(mk, module_full=False):
+async def module_hardware(mk):
     labels = {}
     async for obj in mk.query("/system/routerboard/print"):
         for key in ("board-name", "model", "revision", "serial-number", "firmware-type", "factory-firmware"):
@@ -56,6 +56,7 @@ async def scrape_mikrotik(mk, module_full=False):
         yield "system_hardware_info", "gauge", 1, labels
         break
 
+async def module_software(mk):
     labels = {}
     async for obj in mk.query("/system/resource/print"):
         yield "system_written_sectors_total", "counter", obj["write-sect-total"], labels
@@ -64,15 +65,19 @@ async def scrape_mikrotik(mk, module_full=False):
             yield "system_bad_blocks_total", "counter", obj["bad-blocks"], labels
         except KeyError:
             pass
-
         for key in ("version", "cpu", "cpu-count", "board-name", "architecture-name", "platform"):
             labels[key] = obj[key]
         yield "system_version_info", "gauge", 1, labels
         break
 
+
+
+async def module_interface_bonding(mk):
+    bonds = set()
     async for obj in mk.query("/interface/bonding/print"):
         if not obj:
             continue
+        bonds.add((obj[".id"], obj["name"]))
         labels = {
             "name": obj["name"]
         }
@@ -84,6 +89,27 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "bonding_arp_enabled", "gauge", int(obj["arp"] == "enabled"), labels
 
+    for bond_id, bond_name in bonds:
+        async for obj in mk.query("/interface/bonding/monitor", "=.id=%s" % bond_id, "=once="):
+            labels = {
+                "parent_interface": bond_name,
+                "mode": obj["mode"],
+            }
+
+            for key in ("lacp-system-id", "lacp-partner-system-id"):
+                if key in obj:
+                    labels[key] = obj[key].lower()
+
+            if obj["active-ports"]:
+                for port in obj["active-ports"].split(","):
+                    labels["interface"] = port
+                    yield "bonding_port_active", "gauge", 1, labels
+            if obj["inactive-ports"]:
+                for port in obj["inactive-ports"].split(","):
+                    labels["interface"] = port
+                    yield "bonding_port_active", "gauge", 0, labels
+
+async def module_interface_bridge(mk):
     async for obj in mk.query("/interface/bridge/print"):
         if not obj:
             continue
@@ -106,6 +132,7 @@ async def scrape_mikrotik(mk, module_full=False):
         if "ingress-filtering" in obj:
             yield "bridge_ingress_filtering_enabled", "gauge", int(obj["ingress-filtering"]), labels
 
+async def module_interface_bridge_port(mk):
     async for obj in mk.query("/interface/bridge/port/print"):
         if not obj:
             continue
@@ -116,7 +143,7 @@ async def scrape_mikrotik(mk, module_full=False):
         elif obj.get("inactive", False):
             state = "inactive"
         elif obj.get("disabled", False):
-            state = "disabled";
+            state = "disabled"
         else:
             state = "unknown"
 
@@ -130,6 +157,7 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "bridge_port_info", "gauge", 1, labels
 
+async def module_hardware_health(mk):
     async for obj in mk.query("/system/health/print"):
         # Normalize ROS6 vs ROS7 difference
         if "name" in obj:
@@ -170,33 +198,7 @@ async def scrape_mikrotik(mk, module_full=False):
             else:
                 logger.info("Don't know how to handle system health record %s", repr(key))
 
-    bonds = set()
-    async for obj in mk.query("/interface/bonding/print"):
-        if not obj:
-            continue
-        assert ".id" in obj, obj
-        bonds.add((obj[".id"], obj["name"]))
-
-    for bond_id, bond_name in bonds:
-        async for obj in mk.query("/interface/bonding/monitor", "=.id=%s" % bond_id, "=once="):
-            labels = {
-                "parent_interface": bond_name,
-                "mode": obj["mode"],
-            }
-
-            for key in ("lacp-system-id", "lacp-partner-system-id"):
-                if key in obj:
-                    labels[key] = obj[key].lower()
-
-            if obj["active-ports"]:
-                for port in obj["active-ports"].split(","):
-                    labels["interface"] = port
-                    yield "bonding_port_active", "gauge", 1, labels
-            if obj["inactive-ports"]:
-                for port in obj["inactive-ports"].split(","):
-                    labels["interface"] = port
-                    yield "bonding_port_active", "gauge", 0, labels
-
+async def module_interface_ethernet(mk):
     stats_sent = set()
     async for obj in mk.query("/interface/ethernet/print", "=stats="):
         labels = {"interface": obj["name"]}
@@ -283,6 +285,7 @@ async def scrape_mikrotik(mk, module_full=False):
         yield "interface_running", "gauge", int(obj["running"]), labels
         yield "interface_actual_mtu_bytes", "gauge", obj["actual-mtu"], labels
 
+async def module_interface_ethernet_status(mk):
     port_count = 0
     res = mk.query("/interface/ethernet/print")
     async for obj in res:
@@ -321,6 +324,7 @@ async def scrape_mikrotik(mk, module_full=False):
             pass
         yield "interface_status", "gauge", 1, labels
 
+async def module_interface_poe(mk):
     poe_port_count = 0
     res = mk.query("/interface/ethernet/poe/print", optional=True)
     async for obj in res:
@@ -339,10 +343,7 @@ async def scrape_mikrotik(mk, module_full=False):
             labels["status"] = obj["poe-out-status"]
             yield "poe_out_status", "gauge", 1, labels
 
-    if not module_full:
-        # Specify `module: full` in Probe CRD to pull in extra metrics below
-        return
-
+async def module_bridge_host(mk):
     async for obj in mk.query("/interface/bridge/host/print"):
         labels = {
             "mac": obj["mac-address"].lower(),
@@ -352,6 +353,7 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "bridge_host_info", "gauge", 1, labels
 
+async def module_ip_arp(mk):
     async for obj in mk.query("/ip/arp/print"):
         if not obj.get("complete", False):
             continue
@@ -363,7 +365,10 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
+async def module_ipv6_neighbor(mk):
     async for obj in mk.query("/ipv6/neighbor/print", optional=True):
+        if not obj:
+            break
         if obj["status"] in ("failed", ""):
             continue
         if obj["address"].lower().startswith("ff02:"): # TODO: Make configurable?
@@ -379,6 +384,35 @@ async def scrape_mikrotik(mk, module_full=False):
         }
         yield "neighbor_host_info", "gauge", 1, labels
 
+MODULES = [
+    module_hardware,
+    module_software,
+    module_interface_bonding,
+    module_interface_bridge,
+    module_interface_bridge_port,
+    module_hardware_health,
+    module_interface_ethernet,
+    module_interface_ethernet_status,
+    module_interface_poe
+]
+
+MODULES_FULL = MODULES + [
+    module_bridge_host,
+    module_ip_arp,
+    module_ipv6_neighbor,
+]
+
+async def scrape_mikrotik(mk, module_full=False):
+    modules = MODULES_FULL if module_full else MODULES
+    for module in modules:
+        success = 1
+        try:
+            async for metric in module(mk):
+                yield metric
+        except Exception as e:
+            logger.exception(f"Exception in {module.__name__}: {e}")
+            success = 0
+        yield "scrape_success", "gauge", success, {"module": module.__name__[7:]}
 
 class ServiceUnavailableError(exceptions.SanicException):
     status_code = 503
