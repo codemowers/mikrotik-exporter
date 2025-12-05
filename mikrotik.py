@@ -50,7 +50,7 @@ def numbers(i):
 
 async def module_hardware(mk):
     labels = {}
-    async for obj in mk.query("/system/routerboard/print"):
+    async for obj in mk.query("/system/routerboard/print", optional=True):
         for key in ("board-name", "model", "revision", "serial-number", "firmware-type", "factory-firmware"):
             labels[key] = obj.get(key, "")
         yield "system_hardware_info", "gauge", 1, labels
